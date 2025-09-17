@@ -1,132 +1,104 @@
 import os
 import json
-import datetime
+import logging
 from dotenv import load_dotenv
+import google.auth
+# highlight-start
+import google.auth.exceptions # Import the correct exceptions module
+# highlight-end
 import google.generativeai as genai
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
 
-# --- CONFIGURATION ---
-# Load environment variables from .env file for local development
+# --- SETUP LOGGING ---
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# --- LOAD ENVIRONMENT VARIABLES ---
+logging.info("Loading environment variables from .env file...")
 load_dotenv()
 
-# Get credentials and configuration from environment variables
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# GCP_SA_KEY_STR = os.getenv("GCP_SA_KEY")
-GOOGLE_DRIVE_FOLDER_ID = "1EOvPuiodi_Fb2KDa5B6IOMQBzUtIsjqt"
+# --- CONFIGURATION ---
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
+PROMPT_PATH = os.path.join(ROOT_DIR, 'prompt.json')
+OUTPUT_PATH = os.path.join(ROOT_DIR, 'output.txt')
 
-# Path to the prompt file
-PROMPT_FILE_PATH = "prompt.json"
+def authenticate_and_configure():
+    """Authenticates with Google and configures the Gemini API using .env."""
+    project_id = os.getenv("GOOGLE_PROJECT_ID")
+    if not project_id:
+        logging.error("`GOOGLE_PROJECT_ID` not found in .env file or environment.")
+        return False
 
-# --- AUTHENTICATION ---
-def authenticate():
-    """Handles authentication for Google APIs."""
-    print("Authenticating with Google services...")
-    
-    # Gemini API
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY not found in environment variables.")
-    genai.configure(api_key=GEMINI_API_KEY)
-    print("Gemini API configured.")
-
-    # Google Drive & Docs API
+    logging.info(f"Authenticating with Google Cloud for project: {project_id}")
     try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        service_account_file = os.path.join(script_dir, '..', 'service-account.json')
-        with open(service_account_file, 'r') as f:
-            gcp_sa_key_dict = json.load(f)
-
-        creds = Credentials.from_service_account_info(
-            gcp_sa_key_dict,
-            scopes=[
-                "https://www.googleapis.com/auth/drive",
-                "https://www.googleapis.com/auth/documents"
-            ]
+        credentials, _ = google.auth.default(
+            scopes=['https://www.googleapis.com/auth/cloud-platform']
         )
-        drive_service = build("drive", "v3", credentials=creds)
-        docs_service = build("docs", "v1", credentials=creds)
-        print("Google Drive and Docs APIs configured.")
-        return drive_service, docs_service
-    except FileNotFoundError:
-        raise ValueError("service-account.json not found.")
-    except json.JSONDecodeError:
-        raise ValueError("GCP_SA_KEY is not a valid JSON string.")
+        # highlight-start
+        # FIX: The 'project' argument is not needed and causes a TypeError.
+        genai.configure(credentials=credentials)
+        # highlight-end
+        logging.info("✅ Successfully authenticated and configured Gemini API.")
+        return True
+    # highlight-start
+    # FIX: Catch the correct exception from google.auth.exceptions
+    except google.auth.exceptions.DefaultCredentialsError:
+    # highlight-end
+        logging.error("Authentication failed. Please run 'gcloud auth application-default login'")
+        return False
     except Exception as e:
-        raise RuntimeError(f"Failed to authenticate with Google Drive/Docs: {e}")
+        logging.error(f"An unexpected error occurred during authentication: {e}")
+        return False
 
+def run_pipeline():
+    """Executes the full AI pipeline with detailed logging."""
+    
+    if not authenticate_and_configure():
+        return
 
-# --- CORE LOGIC ---
-def run_pipeline(drive_service, docs_service):
-    """Executes the main research and reporting pipeline."""
-    print("\nStarting the research pipeline...")
-
-    # 1. Read the research prompt
-    print(f"Reading prompt from '{PROMPT_FILE_PATH}'...")
+    logging.info("🚀 Starting the research pipeline...")
+    
+    # 1. Read the prompt from JSON
     try:
-        with open(PROMPT_FILE_PATH, "r") as f:
+        logging.info(f"Reading prompt from: {PROMPT_PATH}")
+        with open(PROMPT_PATH, 'r', encoding='utf-8') as f:
             prompt_data = json.load(f)
-        prompt_content = json.dumps(prompt_data)
+            prompt_content = prompt_data['prompt']
+        logging.debug(f"Prompt content loaded (first 100 chars): '{prompt_content[:100]}...'")
     except FileNotFoundError:
-        raise FileNotFoundError(f"Error: The prompt file was not found at '{PROMPT_FILE_PATH}'")
+        logging.error(f"PIPELINE FAILED: Prompt file not found at {PROMPT_PATH}")
+        return
     except json.JSONDecodeError:
-        raise ValueError(f"Error: Could not decode JSON from '{PROMPT_FILE_PATH}'")
+        logging.error(f"PIPELINE FAILED: Could not decode JSON from {PROMPT_PATH}.")
+        return
+    except KeyError:
+        logging.error(f"PIPELINE FAILED: 'prompt' key not found in {PROMPT_PATH}.")
+        return
 
-    # 2. Execute the prompt with Gemini
-    print("Sending prompt to Gemini API...")
-    model = genai.GenerativeModel('gemini-1.5-pro-latest')
-    response = model.generate_content(prompt_content)
-    print("Received response from Gemini.")
-
-    # 3. Create the Google Doc
-    create_google_doc(drive_service, docs_service, response.text)
-
-
-def create_google_doc(drive_service, docs_service, content):
-    """Creates a new Google Doc with the research results."""
-    if not GOOGLE_DRIVE_FOLDER_ID:
-        raise ValueError("GOOGLE_DRIVE_FOLDER_ID not found. Please set it in your .env file or environment.")
-
-    print("\nCreating Google Doc...")
-    
-    # Format the title with the current date
-    today = datetime.date.today()
-    doc_title = f"Digital Fraud & Scam Intelligence Report - {today.strftime('%B %Y')}"
-
-    # Create the document in the specified folder
-    file_metadata = {
-        "name": doc_title,
-        "mimeType": "application/vnd.google-apps.document",
-        "parents": [GOOGLE_DRIVE_FOLDER_ID]
-    }
-    
+    # 2. Send prompt to Gemini API
     try:
-        document = drive_service.files().create(body=file_metadata).execute()
-        doc_id = document.get("id")
-        print(f"Successfully created Google Doc titled: '{doc_title}' (ID: {doc_id})")
-
-        # Add the content to the document
-        requests = [
-            {
-                'insertText': {
-                    'location': {
-                        'index': 1,
-                    },
-                    'text': content
-                }
-            }
-        ]
-        docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
-        print("Successfully added Gemini content to the document.")
-
+        logging.info("Sending prompt to Gemini API...")
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(prompt_content)
+        generated_text = response.text
+        logging.info("✅ Received response from Gemini.")
+        logging.debug(f"Gemini response (first 100 chars): '{generated_text[:100]}...'")
+        
     except Exception as e:
-        raise RuntimeError(f"An error occurred while creating the Google Doc: {e}")
+        logging.error(f"PIPELINE FAILED: An error occurred with the Gemini API: {e}")
+        return
 
-
-# --- MAIN EXECUTION ---
-if __name__ == "__main__":
+    # 3. Save the output to a local file
     try:
-        drive_service, docs_service = authenticate()
-        run_pipeline(drive_service, docs_service)
-        print("\n✅ Pipeline executed successfully!")
-    except (ValueError, FileNotFoundError, RuntimeError) as e:
-        print(f"\n❌ Pipeline failed: {e}")
+        logging.info(f"Saving output to: {OUTPUT_PATH}")
+        with open(OUTPUT_PATH, 'w', encoding='utf-8') as f:
+            f.write(generated_text)
+        logging.info(f"✅ Pipeline complete. Output saved successfully.")
+    except IOError as e:
+        logging.error(f"PIPELINE FAILED: Could not write to output file: {e}")
+
+if __name__ == "__main__":
+    run_pipeline()
+    
