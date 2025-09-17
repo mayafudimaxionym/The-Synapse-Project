@@ -1,0 +1,7 @@
+# Python virtual environment
+.venv/
+
+# Local secrets file (for local testing)
+service-account.json
+gen-lang-client-0902517326-2a52153b0016.json
+.env
