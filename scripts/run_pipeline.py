@@ -1,11 +1,9 @@
 import os
-import json
+import json # This import is now used
 import logging
 from dotenv import load_dotenv
 import google.auth
-# highlight-start
-import google.auth.exceptions # Import the correct exceptions module
-# highlight-end
+import google.auth.exceptions
 import google.generativeai as genai
 
 # --- SETUP LOGGING ---
@@ -17,6 +15,13 @@ logging.basicConfig(
 # --- LOAD ENVIRONMENT VARIABLES ---
 logging.info("Loading environment variables from .env file...")
 load_dotenv()
+
+# --- START TEMPORARY DEBUG BLOCK ---
+if os.getenv("GOOGLE_API_KEY"):
+    logging.warning("!!! DEBUG: The conflicting GOOGLE_API_KEY is still set in the environment!")
+else:
+    logging.info("--- DEBUG: GOOGLE_API_KEY is not set. This is correct.")
+# --- END TEMPORARY DEBUG BLOCK ---
 
 # --- CONFIGURATION ---
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -36,16 +41,10 @@ def authenticate_and_configure():
         credentials, _ = google.auth.default(
             scopes=['https://www.googleapis.com/auth/cloud-platform']
         )
-        # highlight-start
-        # FIX: The 'project' argument is not needed and causes a TypeError.
         genai.configure(credentials=credentials)
-        # highlight-end
         logging.info("✅ Successfully authenticated and configured Gemini API.")
         return True
-    # highlight-start
-    # FIX: Catch the correct exception from google.auth.exceptions
     except google.auth.exceptions.DefaultCredentialsError:
-    # highlight-end
         logging.error("Authentication failed. Please run 'gcloud auth application-default login'")
         return False
     except Exception as e:
@@ -60,21 +59,21 @@ def run_pipeline():
 
     logging.info("🚀 Starting the research pipeline...")
     
-    # 1. Read the prompt from JSON
+    # 1. Read the structured prompt from JSON
     try:
         logging.info(f"Reading prompt from: {PROMPT_PATH}")
         with open(PROMPT_PATH, 'r', encoding='utf-8') as f:
             prompt_data = json.load(f)
-            prompt_content = prompt_data['prompt']
+            # highlight-start
+            # FIX: Convert the entire JSON object into a formatted string to use as the prompt
+            prompt_content = json.dumps(prompt_data, indent=2)
+            # highlight-end
         logging.debug(f"Prompt content loaded (first 100 chars): '{prompt_content[:100]}...'")
     except FileNotFoundError:
         logging.error(f"PIPELINE FAILED: Prompt file not found at {PROMPT_PATH}")
         return
     except json.JSONDecodeError:
         logging.error(f"PIPELINE FAILED: Could not decode JSON from {PROMPT_PATH}.")
-        return
-    except KeyError:
-        logging.error(f"PIPELINE FAILED: 'prompt' key not found in {PROMPT_PATH}.")
         return
 
     # 2. Send prompt to Gemini API
@@ -101,4 +100,3 @@ def run_pipeline():
 
 if __name__ == "__main__":
     run_pipeline()
-    
