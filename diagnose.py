@@ -1,63 +1,109 @@
 # diagnose.py
 import os
-import google.auth
-from google.auth import impersonated_credentials
-import google.generativeai as genai
+import logging
 from dotenv import load_dotenv
+import google.auth
+import google.generativeai as genai
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
 
-print("--- Starting Authentication Diagnostics (v2) ---")
+# --- Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
-try:
-    # 1. Check for Environment Variable Override
-    print("\n[1/5] Checking for GOOGLE_APPLICATION_CREDENTIALS override...")
-    cred_path_override = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if cred_path_override:
-        print(f"❌ WARNING: Environment variable is set, overriding the default ADC path.")
-        print(f"   Path: {cred_path_override}")
-        print(f"   This is the likely cause of the problem. To fix, run in PowerShell:")
-        print(f"   Remove-Item Env:GOOGLE_APPLICATION_CREDENTIALS")
-    else:
-        print("✅ No override found. Using the default ADC path.")
+def run_authentication_diagnostics():
+    """Checks Gemini API authentication."""
+    print("\n--- Running Gemini Authentication Diagnostics ---")
+    try:
+        credentials, _ = google.auth.default()
+        if not credentials.service_account_email:
+             raise ValueError("Failed to load credentials as a service account.")
+        print(f"✅ [1/2] Authenticated as service account: {credentials.service_account_email}")
 
-    # 2. Load .env file
-    print("\n[2/5] Loading .env file...")
+        list(genai.list_models())
+        print("✅ [2/2] Successfully listed Gemini models.")
+        return True
+    except Exception as e:
+        print(f"❌ FAILED: {e}")
+        return False
+
+def test_google_drive_upload():
+    """Tests Google Drive file upload permissions."""
+    print("\n--- Running Google Drive Permissions Diagnostics ---")
+    file_id_to_delete = None
+    drive_service = None
+    try:
+        key_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+
+        if not key_path or not folder_id:
+            raise ValueError("Required .env variables not found.")
+        
+        scopes = ['https://www.googleapis.com/auth/drive']
+        creds = service_account.Credentials.from_service_account_file(key_path, scopes=scopes)
+        drive_service = build('drive', 'v3', credentials=creds)
+        print(f"✅ [1/3] Authenticated for Drive API.")
+
+        test_file_path = 'test.test'
+        if not os.path.exists(test_file_path):
+            with open(test_file_path, 'w') as f:
+                f.write('test')
+            print("   - Created temporary 'test.test' file.")
+
+        file_metadata = {'name': 'synapse_diagnostic_upload.txt', 'parents': [folder_id]}
+        media = MediaFileUpload(test_file_path, mimetype='text/plain')
+        
+        uploaded_file = drive_service.files().create(
+            body=file_metadata, media_body=media, fields='id').execute()
+        
+        file_id_to_delete = uploaded_file.get('id')
+        if not file_id_to_delete:
+            raise Exception("File created but did not return an ID.")
+        print(f"✅ [2/3] File uploaded successfully (ID: {file_id_to_delete}).")
+
+        drive_service.files().delete(fileId=file_id_to_delete).execute()
+        file_id_to_delete = None
+        print("✅ [3/3] Cleanup successful.")
+        return True
+
+    except HttpError as e:
+        print(f"❌ FAILED: An API error occurred.")
+        print(f"   Details: {e.content.decode()}")
+        return False
+    except Exception as e:
+        print(f"❌ FAILED: An unexpected error occurred.")
+        print(f"   ERROR: {e}")
+        return False
+    finally:
+        if file_id_to_delete and drive_service:
+            print("--- Failsafe cleanup ---")
+            try:
+                drive_service.files().delete(fileId=file_id_to_delete).execute()
+            except Exception:
+                pass
+
+def main():
+    """Runs all diagnostic checks sequentially."""
+    print("--- Starting Full Diagnostics for Synapse Project ---")
     load_dotenv()
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-    if not project_id:
-        raise ValueError("GOOGLE_CLOUD_PROJECT not found in .env file.")
-    print(f"✅ Project ID found: {project_id}")
-
-    # 3. Check for Application Default Credentials (ADC)
-    print("\n[3/5] Checking for Application Default Credentials (ADC)...")
-    credentials, _ = google.auth.default()
-    if not credentials:
-        raise ValueError("Application Default Credentials (ADC) not found.")
-    print("✅ ADC file found.")
-
-    # 4. Verify Impersonation Configuration
-    print("\n[4/5] Verifying ADC configuration...")
-    is_impersonated = isinstance(credentials, impersonated_credentials.Credentials)
-    if not is_impersonated:
-        print("❌ WARNING: ADC is NOT configured for impersonation.")
-        print("   Run: gcloud auth application-default set-quota-project YOUR_PROJECT --impersonate-service-account=YOUR_SA_EMAIL")
-    else:
-        print(f"✅ ADC is correctly configured for impersonation.")
-        print(f"   Service Account: {credentials.service_account_email}")
-
-    # 5. Attempt Authenticated API Call
-    print("\n[5/5] Attempting to list models with current credentials...")
-    model_list = list(genai.list_models())
     
-    print("\n✅ SUCCESS: Successfully authenticated and retrieved models.")
-    print("\n--- Available Models ---")
-    for m in model_list:
-        if 'generateContent' in m.supported_generation_methods:
-            print(f"- {m.name}")
+    gemini_ok = run_authentication_diagnostics()
+    drive_ok = test_google_drive_upload()
 
-    print("\n--- Diagnostics Complete: Your environment is configured correctly. ---")
+    print("\n--- Diagnostics Summary ---")
+    print(f"Gemini API Authentication: {'✅ SUCCESS' if gemini_ok else '❌ FAILED'}")
+    print(f"Google Drive Permissions:  {'✅ SUCCESS' if drive_ok else '❌ FAILED'}")
+    
+    if gemini_ok and drive_ok:
+        print("\n✅ All systems are configured correctly. The main pipeline should run successfully.")
+    else:
+        print("\n❌ Please review the error messages above and correct the configuration.")
 
-except Exception as e:
-    print(f"\n❌ DIAGNOSTICS FAILED:")
-    print(f"   ERROR: {e}")
-    print("\n--- Please review the steps and error messages above. ---")
+if __name__ == "__main__":
+    main()
     
