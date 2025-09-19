@@ -1,57 +1,87 @@
-# The Synapse Project 🧠
+# The Synapse Project
 
-Welcome to The Synapse Project! This repository contains an automated pipeline for generative AI research. It's designed to take a research prompt, execute it using Google's Gemini API, and save the formatted results directly to Google Drive.
+The Synapse Project is an automated pipeline for generative AI research that utilizes a GitOps methodology. It is designed to take a structured research task, query the Google Gemini API, and produce a formatted research document.
 
----
+## Features
 
-## How It Works
+-   **Command-Line Interface:** Run the pipeline with arguments for flexible execution.
+-   **Configurable Inputs:** Easily specify different research prompts and authentication keys.
+-   **Google Cloud Integration:** Leverages Google Gemini for content generation and Google Drive/Docs for output.
+-   **Reliable Output:** Automatically saves a local Markdown copy of every generated report, ensuring no data is lost.
+-   **User-Friendly Progress:** Displays a live progress indicator with an elapsed timer during API calls.
 
-This project uses a **GitOps** approach to AI. The entire research process is triggered and managed from this repository.
+## Prerequisites
 
-1.  **Prompt**: The research instructions are defined in the `prompt.json` file.
-2.  **Trigger**: A [GitHub Action](https://github.com/mayafudimaxionym/The-Synapse-Project/actions) is configured to run on a schedule (e.g., weekly) or can be triggered manually.
-3.  **Execution**: The action runs a Python script (`scripts/run_pipeline.py`) which:
-    * Reads the `prompt.json` file.
-    * Authenticates securely with the Google AI and Google Drive APIs.
-    * Sends the prompt to the Gemini API to perform the research.
-    * Creates a new Google Doc with the results in a designated Google Drive folder.
-4.  **Output**: A new, cleanly formatted research report appears in your Google Drive, ready for use in other tools like NotebookLM.
+Before you begin, ensure you have the following:
 
+1.  **Python 3.11+** installed.
+2.  A **Google Cloud Platform (GCP) Project**.
+3.  In your GCP project, the following APIs must be **enabled**:
+    -   Google Generative Language API (`generativelanguage.googleapis.com`)
+    -   Google Drive API (`drive.googleapis.com`)
+    -   Google Docs API (`docs.googleapis.com`)
+4.  A **Google Cloud Service Account** with the `AI Platform User` role (or similar permissions for the Generative Language API).
+5.  A **JSON key** downloaded for this service account.
+6.  A **Google Drive Folder** where the output documents will be created. The service account's email address must be granted **"Editor"** access to this folder.
 
+## Setup and Installation
 
----
+1.  **Clone the repository:**
+    ```powershell
+    git clone https://github.com/mayafudimaxionym/The-Synapse-Project.git
+    cd The-Synapse-Project
+    ```
 
-## How to Use
+2.  **Create and activate a virtual environment:**
+    ```powershell
+    python -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+    ```
 
-### 1. Modifying the Research Prompt
+3.  **Install the required dependencies:**
+    ```powershell
+    pip install -r requirements.txt
+    ```
 
-To change the research topic, simply edit the `prompt.json` file in this repository. The next time the pipeline runs, it will use your updated instructions.
-### Prompt Structure
+## Configuration
 
-The pipeline reads its research task from `prompt.json`. The structure of this JSON file is critical for the correct operation of the script. The Python script (`scripts/run_pipeline.py`) is currently hardcoded to look for and format the following specific top-level keys:
+Configuration is managed through a `.env` file in the project's root directory.
 
-*   `persona` (object, expects a `role` key inside)
-*   `goals` (list of strings)
-*   `instructions` (list of strings)
-*   `constraints` (list of strings)
-*   `output_format` (string)
+1.  **Create the `.env` file:**
+    Create a file named `.env` and add the following content.
 
-If you modify `prompt.json` by adding, removing, or renaming these keys, you **must** update the `generate_content` function in `scripts/run_pipeline.py` to reflect these changes. This design choice prioritizes stability and consistent formatting for the current project scope.
+    ```env
+    # .env
 
-### 2. Running the Pipeline
+    # 1. Google Cloud Project ID from your working project.
+    GOOGLE_CLOUD_PROJECT="tts-pipeline-project"
 
-* **Automatically**: The pipeline is scheduled to run automatically. You can change the schedule by editing the `cron` setting in the `.github/workflows/pipeline.yml` file.
-* **Manually**:
-    1.  Go to the **Actions** tab of this repository.
-    2.  In the left sidebar, click on the **"Automated Research Pipeline"** workflow.
-    3.  Click the **"Run workflow"** dropdown button and then the green **"Run workflow"** button to start a new run.
+    # 2. The ID of the Google Drive folder where reports will be saved.
+    # Find it in the folder's URL: https://drive.google.com/drive/folders/YOUR_ID_HERE
+    GOOGLE_DRIVE_FOLDER_ID="YOUR_GOOGLE_DRIVE_FOLDER_ID"
 
-### 3. Viewing the Results
+    # 3. (Optional) Default path to the service account key file.
+    # Can be overridden with the --key-file command-line argument.
+    GOOGLE_APPLICATION_CREDENTIALS="tts.json"
 
-Check the Google Drive folder you configured during setup. A new document titled "Digital Fraud & Scam Intelligence Report - [Current Date]" will appear once the workflow is complete.
+    # 4. The specific Gemini API model to use for generation.
+    GEMINI_API_MODEL="models/gemini-2.5-pro"
+    ```
 
----
+2.  **Prompt Configuration (`prompt.json`)**
+    The research task is defined in a JSON file (default: `prompt.json`). This file is structured to separate the **process** (instructions) from the final **product** (output format).
 
-## Developer Setup
+    -   `persona`: Defines the role the AI should adopt.
+    -   `goals`: High-level objectives for the task.
+    -   `instructions`: A step-by-step research process for the AI to follow.
+    -   `constraints`: Rules and limitations for the AI's behavior.
+    -   `output_format`: A detailed Markdown template describing the exact structure of the final document.
 
-For instructions on how to set up the environment and credentials for the first time, please see the [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) file.
+## Usage
+
+The pipeline is executed via `run_pipeline.py`. You can specify the prompt and key files as command-line arguments.
+
+**Basic Execution:**
+(Uses `prompt.json` and the key file specified in `.env` or `tts.json` by default)
+```powershell
+py .\\scripts\\run_pipeline.py
