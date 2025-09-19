@@ -26,6 +26,17 @@ This project uses a **GitOps** approach to AI. The entire research process is tr
 ### 1. Modifying the Research Prompt
 
 To change the research topic, simply edit the `prompt.json` file in this repository. The next time the pipeline runs, it will use your updated instructions.
+### Prompt Structure
+
+The pipeline reads its research task from `prompt.json`. The structure of this JSON file is critical for the correct operation of the script. The Python script (`scripts/run_pipeline.py`) is currently hardcoded to look for and format the following specific top-level keys:
+
+*   `persona` (object, expects a `role` key inside)
+*   `goals` (list of strings)
+*   `instructions` (list of strings)
+*   `constraints` (list of strings)
+*   `output_format` (string)
+
+If you modify `prompt.json` by adding, removing, or renaming these keys, you **must** update the `generate_content` function in `scripts/run_pipeline.py` to reflect these changes. This design choice prioritizes stability and consistent formatting for the current project scope.
 
 ### 2. Running the Pipeline
 
