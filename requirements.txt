@@ -6,3 +6,6 @@ google.oauth
 google-cloud-storage
 google-cloud-secret-manager
 python-dotenv
+requests 
+beautifulsoup4 
+lxml
