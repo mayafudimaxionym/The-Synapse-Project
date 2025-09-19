@@ -12,9 +12,11 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
 
 # --- Configuration ---
-# Setup basic logging to provide clear feedback to the user
+# Configure logging to provide informative output to the console.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -26,7 +28,7 @@ logging.basicConfig(
 def parse_arguments():
     """
     Parses command-line arguments for the pipeline.
-    -h or --help will be automatically generated.
+    Help text is automatically generated via -h or --help.
     """
     parser = argparse.ArgumentParser(
         description="Runs the Synapse Project AI research pipeline.",
@@ -59,40 +61,20 @@ def parse_arguments():
 def authenticate_google_services(key_file_path):
     """
     Authenticates with Google services using the provided service account key.
-    
-    This function performs two separate authentications:
-    1. Creates specific credentials for Drive/Docs API with required scopes.
-    2. Configures the Gemini client, which automatically finds its credentials
-       via the standard GOOGLE_APPLICATION_CREDENTIALS environment variable.
-
-    Args:
-        key_file_path (str): The path to the service account JSON key file.
-
-    Returns:
-        tuple: A tuple containing credentials for Drive/Docs and the configured
-               generative model object, or (None, None) on failure.
     """
     try:
         if not key_file_path or not os.path.exists(key_file_path):
             logging.error(f"Service account key file not found at path: {key_file_path}")
             return None, None
 
-        # --- Authentication for Google Drive & Docs API ---
-        # These APIs require specific scopes to be defined.
-        scopes = [
-            'https://www.googleapis.com/auth/drive',
-            'https://www.googleapis.com/auth/documents'
-        ]
-        drive_creds = service_account.Credentials.from_service_account_file(
-            key_file_path, scopes=scopes)
+        # Create credentials for Drive API with the required scopes.
+        drive_scopes = ['https://www.googleapis.com/auth/drive']
+        drive_creds = service_account.Credentials.from_service_account_file(key_file_path, scopes=drive_scopes)
         
-        # --- Authentication for Generative AI (Gemini) API ---
-        # This library is designed to automatically find and use the credentials
-        # from the environment variable set by the google-auth library.
-        # We do not need to pass credentials to it directly.
+        # Configure the Gemini API client. It will automatically use the same credentials.
         model_name = os.getenv("GEMINI_API_MODEL")
         if not model_name:
-            logging.error("GEMINI_API_MODEL not set in .env file.")
+            logging.error("GEMINI_API_MODEL variable not found in .env file.")
             return None, None
             
         generative_model = genai.GenerativeModel(model_name)
@@ -103,7 +85,7 @@ def authenticate_google_services(key_file_path):
     except Exception as e:
         logging.error(f"An error occurred during authentication: {e}", exc_info=True)
         return None, None
-    
+
 def read_prompt(file_path):
     """Reads the research prompt from a JSON file."""
     try:
@@ -112,10 +94,10 @@ def read_prompt(file_path):
         logging.info(f"Reading prompt from: {os.path.abspath(file_path)}")
         return prompt_data
     except FileNotFoundError:
-        logging.error(f"Prompt file not found at {file_path}")
+        logging.error(f"Prompt file not found: {file_path}")
         return None
     except json.JSONDecodeError:
-        logging.error(f"Error decoding JSON from {file_path}")
+        logging.error(f"Error decoding JSON from file: {file_path}")
         return None
 
 def _animate_waiting(stop_event):
@@ -132,14 +114,10 @@ def _animate_waiting(stop_event):
     print('\r' + ' ' * 60 + '\r', end='', flush=True)
 
 def generate_content(model, prompt_data):
-    """
-    Formats the prompt data into a string and generates content
-    using the Gemini API, with a waiting indicator.
-    """
-    if not model or not prompt_data:
-        return None
+    """Formats the prompt and generates content using the Gemini API."""
+    if not model or not prompt_data: return None
     try:
-        # Format the complex JSON prompt into a single, well-structured string
+        # Convert the complex JSON prompt into a single, well-structured string.
         formatted_prompt = (
             f"**Persona:**\n{prompt_data.get('persona', {}).get('role', 'N/A')}\n\n"
             f"**Primary Goals:**\n"
@@ -153,7 +131,6 @@ def generate_content(model, prompt_data):
         
         logging.info("Sending formatted prompt to Gemini API...")
         
-        # Start the waiting indicator in a separate thread
         stop_spinner = threading.Event()
         spinner_thread = threading.Thread(target=_animate_waiting, args=(stop_spinner,))
         spinner_thread.start()
@@ -161,7 +138,6 @@ def generate_content(model, prompt_data):
         try:
             response = model.generate_content(formatted_prompt)
         finally:
-            # Ensure the spinner stops, regardless of success or failure
             stop_spinner.set()
             spinner_thread.join()
         
@@ -182,80 +158,93 @@ def save_output_locally(output_dir, content, timestamp_str):
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
         
-        logging.info(f"✅ Valuable output has been saved locally to: {filepath}")
+        logging.info(f"✅ Output has been saved locally to: {filepath}")
         return filepath
     except Exception as e:
         logging.error(f"Could not save local file: {e}", exc_info=True)
         return None
 
-def create_google_doc(credentials, folder_id, title, content):
-    """Creates a new Google Doc with the generated content in a specific folder."""
+def create_google_doc(credentials, folder_id, title, local_md_path):
+    """
+    Creates a new Google Doc by uploading a local Markdown file and letting
+    Google Drive convert it. This is a robust workaround for Docs API permission issues.
+    """
     if not credentials or not folder_id:
         logging.warning("Skipping Google Doc creation: credentials or folder_id missing.")
         return None
+    if not local_md_path or not os.path.exists(local_md_path):
+        logging.error(f"Skipping Google Doc creation: local file not found at {local_md_path}")
+        return None
+        
     try:
-        docs_service = build('docs', 'v1', credentials=credentials)
-        drive_service = build('drive', 'v3', credentials=credentials)
+        drive_service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
         
-        logging.info(f"Creating new Google Doc titled: '{title}'")
+        logging.info(f"Uploading local file '{local_md_path}' to create Google Doc...")
         
-        doc = docs_service.documents().create(body={'title': title}).execute()
-        doc_id = doc.get('documentId')
+        # Metadata for the new file on Google Drive.
+        # The mimeType tells Drive to convert the uploaded file into a Google Doc.
+        file_metadata = {
+            'name': title,
+            'parents': [folder_id],
+            'mimeType': 'application/vnd.google-apps.document'
+        }
         
-        requests = [{'insertText': {'location': {'index': 1}, 'text': content}}]
-        docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
-            
-        file = drive_service.files().get(fileId=doc_id, fields='parents').execute()
-        previous_parents = ",".join(file.get('parents'))
-        drive_service.files().update(
-            fileId=doc_id,
-            addParents=folder_id,
-            removeParents=previous_parents,
-            fields='id, parents').execute()
+        # Media object for the file upload, specifying the source file's mime type.
+        media = MediaFileUpload(
+            local_md_path,
+            mimetype='text/markdown',
+            resumable=True
+        )
+        
+        # Execute the upload and conversion.
+        file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink',
+            supportsAllDrives=True
+        ).execute()
 
-        doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
-        logging.info(f"✅ Successfully created Google Doc.")
+        doc_url = file.get('webViewLink')
+        logging.info(f"✅ Successfully created Google Doc via file upload.")
         logging.info(f"   URL: {doc_url}")
         return doc_url
 
     except Exception as e:
-        logging.error(f"Failed to create Google Doc: {e}", exc_info=True)
+        logging.error(f"Failed to create Google Doc via file upload: {e}", exc_info=True)
         return None
 
 def main():
     """Main function to orchestrate the research pipeline."""
-    # Load .env file for variables not passed as arguments (e.g., model, folder_id)
     load_dotenv()
     args = parse_arguments()
 
     logging.info("🚀 Starting the research pipeline...")
     
-    # Determine the key file path: prioritize command-line arg, then .env, then default
-    key_file = args.key_file or os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "tts.json"
+    key_file = args.key_file or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
     drive_creds, model = authenticate_google_services(key_file)
     if not drive_creds or not model:
-        logging.critical("Pipeline halted due to authentication failure.")
+        logging.critical("Pipeline halted: authentication failure.")
         return
 
     prompt_content = read_prompt(args.prompt)
     if not prompt_content:
-        logging.critical("Pipeline halted: Could not read prompt file.")
+        logging.critical("Pipeline halted: could not read prompt file.")
         return
 
     generated_text = generate_content(model, prompt_content)
     if not generated_text:
-        logging.critical("Pipeline halted: Failed to generate content.")
+        logging.critical("Pipeline halted: failed to generate content.")
         return
 
-    # --- Permanent local save ---
     timestamp_for_files = datetime.now().strftime('%Y%m%d_%H%M%S')
-    save_output_locally(args.output_dir, generated_text, timestamp_for_files)
+    # The local file is now essential for the upload process.
+    local_filepath = save_output_locally(args.output_dir, generated_text, timestamp_for_files)
 
-    # --- Google Doc creation (optional but recommended) ---
     folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
     doc_title = f"Synapse Project Research - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    doc_url = create_google_doc(drive_creds, folder_id, doc_title, generated_text)
+    # Pass the path of the locally saved file to the creation function.
+    doc_url = create_google_doc(drive_creds, folder_id, doc_title, local_filepath)
     
     if doc_url:
         logging.info("🏁 Research pipeline finished successfully.")
@@ -264,3 +253,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
